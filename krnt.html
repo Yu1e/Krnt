@@ -955,7 +955,7 @@
             whales:     { label: 'Киты', icon: 'whale', params: [
                 { key: 'calls', label: 'Частота зовов', def: 50 },
                 { key: 'echo', label: 'Глубина эха', def: 55 },
-                { key: 'water', label: 'Пузыри и плеск', def: 50, hint: 'Выдохи аквалангиста, побулькивание, плеск над головой. 0 — только киты' }] },
+                { key: 'water', label: 'Пузыри и плеск', def: 50, hint: 'Побулькивание и плеск над головой. 0 — только киты' }] },
             bubbles:    { label: 'Пузыри', icon: 'bubbles', params: [
                 { key: 'rate', label: 'Частота', def: 50 },
                 { key: 'size', label: 'Размер пузырей', def: 50 }] },
@@ -2853,29 +2853,6 @@
                 o.connect(g); g.connect(dest);
                 o.start(t); o.stop(t + dur + 0.02);
             };
-            // Выдох аквалангиста: из трубки вырывается клубок пузырей — густо в начале,
-            // реже к концу, под ним глухое клокотание воздуха.
-            const scuba = () => {
-                const t0 = ctx.currentTime + 0.05;
-                const len = 1.4 + Math.random() * 1.4;
-                const dest = panned();
-                const n = 28 + Math.floor(Math.random() * 30);
-                for (let i = 0; i < n; i++) {
-                    const x = Math.pow(Math.random(), 1.7);          // гуще в начале
-                    const size = 0.25 + Math.random() * 0.75;
-                    bubble(t0 + x * len, size, (0.05 + 0.07 * size) * (1 - 0.6 * x), dest);
-                }
-                const rumble = ctx.createBufferSource();
-                rumble.buffer = makeNoiseBuffer(ctx, 'brown');
-                const bp = ctx.createBiquadFilter();
-                bp.type = 'bandpass'; bp.frequency.value = 230 + Math.random() * 80; bp.Q.value = 0.9;
-                const rg = ctx.createGain();
-                rg.gain.setValueAtTime(0.0001, t0);
-                rg.gain.exponentialRampToValueAtTime(0.16, t0 + 0.12);
-                rg.gain.setTargetAtTime(0.0001, t0 + len * 0.35, len * 0.25);
-                rumble.connect(bp); bp.connect(rg); rg.connect(dest);
-                rumble.start(t0); rumble.stop(t0 + len + 0.6);
-            };
             // Побулькивание: несколько крупных пузырей вразнобой
             const gurgle = () => {
                 const t0 = ctx.currentTime + 0.05;
@@ -2920,7 +2897,7 @@
                 const w = acn('whales', 'water');
                 if (w > 0.02) {
                     const r = Math.random();
-                    if (r < 0.45) scuba(); else if (r < 0.8) gurgle(); else splash();
+                    if (r < 0.65) gurgle(); else splash();
                 }
                 wTimer = setTimeout(waterSched, (3500 + Math.random() * 7000) / (0.3 + w * 1.4));
             };
