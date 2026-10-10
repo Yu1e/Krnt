@@ -935,7 +935,7 @@
             purr:       { label: 'Мурлыканье', icon: 'cat', params: [
                 { key: 'pace', label: 'Темп мурчания', def: 50 },
                 { key: 'life', label: 'Живость', def: 50, hint: 'Смена настроений, паузы, ускорения' },
-                { key: 'trill', label: 'Мурк', def: 30, hint: 'Короткое «бррып» при встрече. 0 — выключить' }] },
+                { key: 'trill', label: 'Мурк', def: 30, hint: 'Короткое певучее «мрр» — пять разных, вразнобой. 0 — выключить' }] },
             whales:     { label: 'Киты', icon: 'whale', params: [
                 { key: 'calls', label: 'Частота зовов', def: 50 },
                 { key: 'echo', label: 'Глубина эха', def: 55 }] },
@@ -2489,7 +2489,164 @@
             return { stop: () => { n.src.stop(); lfo.stop(); clearInterval(iv); } };
         }
 
-        // Мурлыканье: живой кот — настроения, паузы, ускорения, редкое «бррып»
+        // ============================================================
+        //  МУРК — короткое кошачье «мрр» как живой голос.
+        //  Голос собирается из отдельных толчков связок: интервал между ними плавает,
+        //  сила каждого тоже, иногда толчки идут парами — отсюда хрипотца.
+        //  Звук проходит через резонансы горла и носа; приоткрытый рот поднимает их,
+        //  и «мрр» переходит в «мря». Клокотание — неровные хлопки 18–27 раз в секунду.
+        //  Пять мурков лежат колодой: каждый звучит по разу в случайном порядке,
+        //  потом колода тасуется заново.
+        // ============================================================
+        const MURK = (() => {
+            const rnd = (a, b) => a + Math.random() * (b - a);
+            const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 0.5;
+            const curve = (pts, x) => {
+                if (x <= pts[0][0]) return pts[0][1];
+                for (let i = 1; i < pts.length; i++) {
+                    if (x <= pts[i][0]) {
+                        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+                        const k = (x - x0) / Math.max(1e-6, x1 - x0);
+                        return y0 + (y1 - y0) * (0.5 - 0.5 * Math.cos(Math.PI * k));
+                    }
+                }
+                return pts[pts.length - 1][1];
+            };
+            // Двухполюсный резонатор, как в формантных синтезаторах голоса
+            const reson = () => {
+                let y1 = 0, y2 = 0, a = 0, b = 0, c = 0;
+                return {
+                    set(f, bw, sr) {
+                        c = -Math.exp(-2 * Math.PI * bw / sr);
+                        b = 2 * Math.exp(-Math.PI * bw / sr) * Math.cos(2 * Math.PI * f / sr);
+                        a = 1 - b - c;
+                    },
+                    run(x) { const y = a * x + b * y1 + c * y2; y2 = y1; y1 = y; return y; }
+                };
+            };
+
+            function buffer(ctx, P) {
+                const sr = ctx.sampleRate;
+                const n = Math.floor(P.dur * sr);
+                const buf = ctx.createBuffer(1, n, sr);
+                const d = buf.getChannelData(0);
+                const r1 = reson(), r2 = reson(), r3 = reson(), rn = reson();
+                let nextPulse = 0, pulseIdx = 0, g1 = 0, g2 = 0;
+                let flapStart = -1, flapLen = 0.03, flapAmp = 1, nextFlap = rnd(0, 0.02);
+                let wob = 0, wobT = 0, peak = 0;
+                const glA = 1 - Math.exp(-2 * Math.PI * 1100 / sr);
+                for (let i = 0; i < n; i++) {
+                    const t = i / sr, x = t / P.dur;
+                    // клокотание
+                    const rollAmt = curve(P.roll, x);
+                    if (t >= nextFlap) {
+                        flapStart = t;
+                        const rate = P.rate * rnd(0.85, 1.15);
+                        flapLen = (1 / rate) * rnd(0.55, 0.85);
+                        flapAmp = rnd(0.45, 1);
+                        nextFlap = t + (1 / rate) * (1 + P.irregular * gauss() * 0.5);
+                        if (Math.random() < 0.07) nextFlap += 1 / rate;   // иногда хлопок пропадает
+                    }
+                    const fx = (t - flapStart) / flapLen;
+                    const flap = fx >= 0 && fx < 1 ? flapAmp * Math.sin(Math.PI * Math.pow(fx, 0.6)) : 0;
+                    const gate = (1 - rollAmt) + rollAmt * flap;
+                    // мелодия, дрожь голоса, проседание на хлопке
+                    if (i % 200 === 0) wobT = gauss();
+                    wob += (wobT - wob) * 0.003;
+                    const f0 = curve(P.f0, x) * P.pitch * (1 + 0.02 * wob) * (1 - 0.05 * rollAmt * (1 - flap));
+                    // толчки связок
+                    let e = 0;
+                    if (t >= nextPulse) {
+                        let amp = 1 + P.shimmer * gauss();
+                        if (P.rough && (pulseIdx & 1) && curve(P.roughAt, x) > 0.5) amp *= 1 - P.rough;
+                        e = Math.max(0.1, amp);
+                        nextPulse = t + (1 / f0) * (1 + P.jitter * gauss());
+                        pulseIdx++;
+                    }
+                    g1 += glA * (e * 30 - g1);
+                    g2 += glA * (g1 - g2);
+                    const voice = g1 - g2 * 0.9;
+                    const noise = (Math.random() * 2 - 1) * P.breath * (0.4 + 0.6 * flap);
+                    // горло и нос
+                    if (i % 32 === 0) {
+                        const m = curve(P.mouth, x);
+                        r1.set(430 + 420 * m, 110 + 60 * m, sr);
+                        r2.set(1150 + 500 * m, 180, sr);
+                        r3.set(2600 + 300 * m, 320, sr);
+                        rn.set(260, 90, sr);
+                    }
+                    const src = (voice + noise) * gate;
+                    const v = (r3.run(r2.run(r1.run(src))) + rn.run(src) * 0.6) * curve(P.amp, x);
+                    d[i] = v;
+                    if (Math.abs(v) > peak) peak = Math.abs(v);
+                }
+                const norm = peak > 0 ? 1 / peak : 1;
+                for (let i = 0; i < n; i++) d[i] *= norm;
+                return buf;
+            }
+
+            const VOICE = { jitter: 0.035, shimmer: 0.18, breath: 0.25, rate: 25, irregular: 0.5, rough: 0.35, roughAt: [[0, 1], [1, 1]] };
+            const phrase = base => ({ ...VOICE, ...base,
+                pitch: rnd(0.9, 1.1), dur: base.dur * rnd(0.88, 1.12), rate: (base.rate || VOICE.rate) * rnd(0.88, 1.12) });
+
+            // «Мрра-у»: клокотание переходит в певучий звук; k — высота (1 — исходная)
+            const mrrau = k => () => {
+                const low = 1 - k;
+                return phrase({
+                    dur: 1.0 * (1 + low * 0.35), rate: 25 - low * 7,
+                    f0: [[0, 370 * k], [0.3, 440 * k], [0.58, 620 * k], [0.8, 560 * k], [1, 420 * k]],
+                    amp: [[0, 0], [0.05, 0.8], [0.45, 1], [0.85, 0.75], [1, 0]],
+                    roll: [[0, 0.95], [0.42, 0.75], [0.6, 0.25], [1, 0.1]],
+                    mouth: [[0, 0], [0.45, 0.1], [0.68, 0.8 - low * 0.9], [1, 0.35 - low * 0.4]],
+                    roughAt: [[0, 1], [0.45, 1], [0.55, 0], [1, 0]]
+                });
+            };
+
+            const KINDS = {
+                // «Мрр-мрря»: клокочущее начало и певучий подъём
+                mrrya: () => phrase({
+                    dur: 0.72,
+                    f0: [[0, 390], [0.28, 460], [0.42, 420], [0.72, 560], [1, 500]],
+                    amp: [[0, 0], [0.06, 1], [0.34, 0.85], [0.43, 0.4], [0.52, 1], [0.88, 0.85], [1, 0]],
+                    roll: [[0, 0.95], [0.4, 0.85], [0.5, 0.9], [0.8, 0.45], [1, 0.3]],
+                    mouth: [[0, 0], [0.6, 0.1], [0.85, 0.45], [1, 0.3]],
+                    roughAt: [[0, 1], [0.38, 1], [0.45, 0], [1, 0]]
+                }),
+                mrrau: mrrau(1),
+                mrrauLow: mrrau(0.84),     // на три полутона ниже
+                mrrauLower: mrrau(0.75),   // на пять полутонов ниже
+                // Сонный «мрр… мрм»: отозвался и снова задремал
+                sleepy: () => {
+                    const k = 0.84;
+                    const p = phrase({
+                        dur: 0.95, rate: 18 + 4 * k, irregular: 0.75,
+                        jitter: 0.04, shimmer: 0.22, breath: 0.28, rough: 0.4,
+                        f0: [[0, 250 * k], [0.22, 290 * k], [0.4, 262 * k], [0.55, 240 * k], [0.72, 275 * k], [1, 225 * k]],
+                        amp: [[0, 0], [0.07, 0.9], [0.3, 1], [0.46, 0.35], [0.56, 0.75], [0.8, 0.65], [1, 0]],
+                        roll: [[0, 0.95], [0.4, 0.85], [0.55, 0.9], [1, 0.55]],
+                        mouth: [[0, 0], [0.4, 0.08], [1, 0]]
+                    });
+                    p.dur *= 1 + (1 - k) * 0.25;
+                    return p;
+                }
+            };
+
+            // Колода: каждый мурк по разу, порядок случайный; на стыке колод подряд один и тот же не звучит
+            let deck = [], last = null;
+            function next() {
+                if (!deck.length) {
+                    deck = Object.keys(KINDS);
+                    for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+                    if (deck[deck.length - 1] === last) [deck[0], deck[deck.length - 1]] = [deck[deck.length - 1], deck[0]];
+                }
+                last = deck.pop();
+                return KINDS[last]();
+            }
+
+            return { buffer, next };
+        })();
+
+        // Мурлыканье: живой кот — настроения, паузы, ускорения, редкое певучее «мрр»
         function genPurr(ctx, out) {
             const lp = ctx.createBiquadFilter();
             lp.type = 'lowpass'; lp.frequency.value = 240; lp.Q.value = 0.7;
@@ -2560,45 +2717,30 @@
                 }
                 mTimer = setTimeout(moodStep, next);
             };
-            // «Бррып»: короткий рулад на выдохе при сомкнутом рте — быстрая пульсация связок,
-            // высокий тон с подъёмом. Пульсация делается амплитудой, а не воем частоты.
+            // «Мурк»: живой голос из набора MURK, каждый раз следующий из перемешанной колоды
             const trillSound = () => {
                 const amt = acn('purr', 'trill');
-                if (amt <= 0.02) return;
-                const t = ctx.currentTime;
-                const dur = 0.3 + Math.random() * 0.22;
-                const o = ctx.createOscillator();
-                o.type = 'sawtooth';
-                const f0 = 430 + Math.random() * 90;
-                o.frequency.setValueAtTime(f0, t);
-                o.frequency.linearRampToValueAtTime(f0 * 1.5, t + dur * 0.7);
-                o.frequency.linearRampToValueAtTime(f0 * 1.32, t + dur);
+                if (amt <= 0.02) return 0;
+                const buf = MURK.buffer(ctx, MURK.next());
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                const hp = ctx.createBiquadFilter();
+                hp.type = 'highpass'; hp.frequency.value = 150; hp.Q.value = 0.5;
                 const lpf = ctx.createBiquadFilter();
-                lpf.type = 'lowpass'; lpf.frequency.value = 1250; lpf.Q.value = 5;
-                const roll = ctx.createGain();
-                roll.gain.value = 0.5;
-                const lfo = ctx.createOscillator(), lg = ctx.createGain();
-                lfo.type = 'sine';
-                lfo.frequency.setValueAtTime(29, t);
-                lfo.frequency.linearRampToValueAtTime(38, t + dur);
-                lg.gain.value = 0.45;
-                lfo.connect(lg); lg.connect(roll.gain);
-                const env = ctx.createGain();
-                const peak = 0.035 + 0.05 * amt;
-                env.gain.setValueAtTime(0.0001, t);
-                env.gain.exponentialRampToValueAtTime(peak, t + 0.05);
-                env.gain.setValueAtTime(peak, t + dur * 0.6);
-                env.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.06);
-                o.connect(lpf); lpf.connect(roll); roll.connect(env); env.connect(out);
-                lfo.start(t); lfo.stop(t + dur + 0.15);
-                o.start(t); o.stop(t + dur + 0.15);
+                lpf.type = 'lowpass'; lpf.frequency.value = 3800; lpf.Q.value = 0.5;
+                const g = ctx.createGain();
+                g.gain.value = 0.2 + 0.4 * amt;
+                src.connect(hp); hp.connect(lpf); lpf.connect(g); g.connect(out);
+                src.start(ctx.currentTime + 0.02);
+                return buf.duration;
             };
             const trillSched = () => {
                 if (!alive) return;
                 const amt = acn('purr', 'trill');
                 if (amt > 0.02) {
-                    trillSound();
-                    if (Math.random() < 0.3) setTimeout(() => { if (alive) trillSound(); }, 420 + Math.random() * 260);
+                    const dur = trillSound();
+                    // иногда кот мурчит ещё раз, сразу следом
+                    if (Math.random() < 0.3) setTimeout(() => { if (alive) trillSound(); }, (dur + 0.15 + Math.random() * 0.35) * 1000);
                 }
                 tTimer = setTimeout(trillSched, (14000 - amt * 8000) + Math.random() * 12000);
             };
