@@ -2565,8 +2565,11 @@
                     }
                     g1 += glA * (e * 30 - g1);
                     g2 += glA * (g1 - g2);
-                    const voice = g1 - g2 * 0.9;
-                    const noise = (Math.random() * 2 - 1) * P.breath * (0.4 + 0.6 * flap);
+                    // в начале голос проступает изнутри мурлыканья: сперва одни шершавые толчки, потом тон
+                    const em = P.emerge ? Math.min(1, t / P.emerge) : 1;
+                    const emS = em * em * (3 - 2 * em);
+                    const voice = (g1 - g2 * 0.9) * emS;
+                    const noise = (Math.random() * 2 - 1) * P.breath * (0.4 + 0.6 * flap) * (1 + 1.6 * (1 - emS));
                     // горло и нос
                     if (i % 32 === 0) {
                         const m = curve(P.mouth, x);
@@ -2633,14 +2636,14 @@
 
             // Колода: каждый мурк по разу, порядок случайный; на стыке колод подряд один и тот же не звучит
             let deck = [], last = null;
-            function next() {
+            function next(over) {
                 if (!deck.length) {
                     deck = Object.keys(KINDS);
                     for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
                     if (deck[deck.length - 1] === last) [deck[0], deck[deck.length - 1]] = [deck[deck.length - 1], deck[0]];
                 }
                 last = deck.pop();
-                return KINDS[last]();
+                return Object.assign(KINDS[last](), over || {});
             }
 
             return { buffer, next };
@@ -2730,12 +2733,17 @@
                 const g = purrGate.gain;
                 if (g.cancelAndHoldAtTime) g.cancelAndHoldAtTime(now);
                 else { g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); }
-                // мурлыканье чуть вспухает и уходит в мурк
-                g.linearRampToValueAtTime(1.12, now + 0.08);
-                g.linearRampToValueAtTime(0, now + 0.26);
-                let t = now + 0.14;                          // мурк вступает, пока мурлыканье гаснет
+                // Перетекание: мурлыканье светлеет и чуть вспухает, изнутри него в том же ритме
+                // проступает голос, и только когда голос набрал силу, мурлыканье тает под ним
+                lp.frequency.cancelScheduledValues(now);
+                lp.frequency.setTargetAtTime(620, now, 0.14);
+                g.linearRampToValueAtTime(1.1, now + 0.18);
+                g.setTargetAtTime(0, now + 0.32, 0.17);
+                let t = now + 0.1;
                 for (let i = 0; i < count; i++) {
-                    const buf = MURK.buffer(ctx, MURK.next());
+                    // первый мурк клокочет в ритме мурлыканья и вырастает из него
+                    const over = i === 0 ? { rate: rum.frequency.value * (0.95 + Math.random() * 0.1), emerge: 0.38 } : null;
+                    const buf = MURK.buffer(ctx, MURK.next(over));
                     const src = ctx.createBufferSource();
                     src.buffer = buf;
                     const hp = ctx.createBiquadFilter();
@@ -2743,16 +2751,21 @@
                     const lpf = ctx.createBiquadFilter();
                     lpf.type = 'lowpass'; lpf.frequency.value = 3800; lpf.Q.value = 0.5;
                     const mg = ctx.createGain();
-                    mg.gain.value = 0.2 + 0.4 * amt;
+                    const full = 0.2 + 0.4 * amt;
+                    if (i === 0) {
+                        mg.gain.setValueAtTime(0.0001, t);
+                        mg.gain.setTargetAtTime(full, t, 0.11);
+                    } else mg.gain.value = full;
                     src.connect(hp); hp.connect(lpf); lpf.connect(mg); mg.connect(out);
                     src.start(t);
                     t += buf.duration;
                     if (i < count - 1) t += 0.12 + Math.random() * 0.28;   // второй мурк сразу следом
                 }
                 // крохотная пауза — и мурлыканье снова
-                const back = Math.max(now + 0.27, t + 0.12 + Math.random() * 0.18);
+                const back = Math.max(now + 1, t + 0.12 + Math.random() * 0.18);
                 g.setValueAtTime(0, back);
                 g.setTargetAtTime(1, back, 0.12);
+                lp.frequency.setTargetAtTime(240, back - 0.3, 0.1);
             };
             const trillSched = () => {
                 if (!alive) return;
