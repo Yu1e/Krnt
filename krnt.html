@@ -880,7 +880,7 @@
         </div>
 
         <footer class="text-center text-gray-600 text-xs mt-8">
-            <p>Куранты v3.22 • Перекидное северное сияние <svg class="ic"><use href="#i-sparkle"/></svg></p>
+            <p>Куранты v3.23 • Перекидное северное сияние <svg class="ic"><use href="#i-sparkle"/></svg></p>
         </footer>
     </div>
 
@@ -940,7 +940,7 @@
                 { key: 'echo', label: 'Эхо', def: 50 }] },
             windchimes: { label: 'Музыка ветра', icon: 'windchime', params: [
                 { key: 'count', label: 'Трубки', def: 5, min: 3, max: 15, step: 1, hint: 'Сколько трубок в наборе' },
-                { key: 'tube', label: 'Диаметр трубок', def: 55, hint: 'Толще — ниже и дольше звенят' },
+                { key: 'tube', label: 'Диаметр трубок', def: 55, max: 160, hint: 'Толще — ниже и дольше звенят. Выше 100 — огромные басовые трубы' },
                 { key: 'wind', label: 'Сила ветра', def: 40 }] },
             rain:       { label: 'Дождь', icon: 'rain', params: [
                 { key: 'density', label: 'Плотность', def: 50 },
@@ -954,7 +954,8 @@
                 { key: 'trill', label: 'Мурк', def: 30, hint: 'Короткое певучее «мрр» — пять разных, вразнобой. 0 — выключить' }] },
             whales:     { label: 'Киты', icon: 'whale', params: [
                 { key: 'calls', label: 'Частота зовов', def: 50 },
-                { key: 'echo', label: 'Глубина эха', def: 55 }] },
+                { key: 'echo', label: 'Глубина эха', def: 55 },
+                { key: 'water', label: 'Пузыри и плеск', def: 50, hint: 'Выдохи аквалангиста, побулькивание, плеск над головой. 0 — только киты' }] },
             bubbles:    { label: 'Пузыри', icon: 'bubbles', params: [
                 { key: 'rate', label: 'Частота', def: 50 },
                 { key: 'size', label: 'Размер пузырей', def: 50 }] },
@@ -2414,15 +2415,20 @@
                     p.connect(out);
                     dest = p;
                 }
-                const hi = 0.35 * (1 - 0.55 * tubeNorm);
+                // у огромных труб верхний призвук тише, а длинные хвосты копятся — общий уровень чуть ниже
+                const hi = 0.35 * Math.max(0.1, 1 - 0.55 * tubeNorm);
+                const big = Math.max(0, tubeNorm - 1);
                 const atk = 0.008 + tubeNorm * 0.012;
-                [[1, 1], [2.76, hi]].forEach(([m, lvl]) => {
+                const partials = [[1, 1], [2.76, hi]];
+                // толстая труба гудит с медленными биениями: две близкие частоты
+                if (big > 0) partials.push([1.0035 + Math.random() * 0.002, 0.5 * Math.min(1, big * 1.7)], [5.4, 0.06]);
+                partials.forEach(([m, lvl]) => {
                     const o = ctx.createOscillator(), g = ctx.createGain();
                     o.type = 'sine';
                     o.frequency.setValueAtTime(f * m, t);
                     g.gain.setValueAtTime(0.0001, t);
-                    g.gain.exponentialRampToValueAtTime(Math.max(vel * lvl, 0.0002), t + atk);
-                    g.gain.exponentialRampToValueAtTime(0.0001, t + decay / (m > 1 ? 1.6 : 1));
+                    g.gain.exponentialRampToValueAtTime(Math.max(vel * lvl * (1 - 0.3 * big), 0.0002), t + atk);
+                    g.gain.exponentialRampToValueAtTime(0.0001, t + decay / (m > 1.5 ? 1.6 : 1));
                     o.connect(g); g.connect(dest);
                     o.start(t); o.stop(t + decay + 0.1);
                 });
@@ -2820,37 +2826,91 @@
                 v.start(t); v.stop(t + dur + 0.4);
                 o.start(t); o.stop(t + dur + 0.4);
             };
-            // Отдельные звуки воды: булькающая капля и мягкий всплеск
-            const gloop = () => {
-                const t = ctx.currentTime;
+            // ---- Звуки под водой: всё глухое, низкое, без эха ----
+            // Вода глотает верхние частоты, поэтому всё идёт через мягкий фильтр «толщи воды».
+            const water = ctx.createBiquadFilter();
+            water.type = 'lowpass'; water.frequency.value = 900; water.Q.value = 0.6;
+            water.connect(out);
+            // ровный гул глубины, едва слышный
+            const deepLp = ctx.createBiquadFilter();
+            deepLp.type = 'lowpass'; deepLp.frequency.value = 170;
+            deepLp.connect(out);
+            const deep = loopNoise(ctx, 'brown', 0.05, deepLp);
+            const panned = () => {
+                if (!ctx.createStereoPanner) return water;
+                const p = ctx.createStereoPanner();
+                p.pan.value = (Math.random() * 2 - 1) * 0.6;
+                p.connect(water);
+                return p;
+            };
+            // Пузырь под водой: низкий затухающий тон, который чуть поднимается, пока пузырь всплывает.
+            // Чем крупнее пузырь, тем ниже и дольше он звучит.
+            const bubble = (t, size, lvl, dest) => {
+                const f = 620 - 470 * size + Math.random() * 60;
+                const dur = 0.05 + 0.14 * size + Math.random() * 0.04;
                 const o = ctx.createOscillator(), g = ctx.createGain();
                 o.type = 'sine';
-                const f = 220 + Math.random() * 420;
                 o.frequency.setValueAtTime(f, t);
-                o.frequency.exponentialRampToValueAtTime(f * (1.7 + Math.random()), t + 0.05 + Math.random() * 0.05);
+                o.frequency.exponentialRampToValueAtTime(f * (1.12 + Math.random() * 0.15), t + dur);
                 g.gain.setValueAtTime(0.0001, t);
-                g.gain.exponentialRampToValueAtTime(0.05 + Math.random() * 0.05, t + 0.008);
-                g.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
-                o.connect(g); g.connect(out); g.connect(dl);
-                o.start(t); o.stop(t + 0.2);
+                g.gain.exponentialRampToValueAtTime(Math.max(lvl, 0.0002), t + 0.004);
+                g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+                o.connect(g); g.connect(dest);
+                o.start(t); o.stop(t + dur + 0.02);
             };
-            const splash = () => {
-                const t = ctx.currentTime;
-                const len = Math.floor(ctx.sampleRate * 0.5);
-                const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-                const d = buf.getChannelData(0);
-                for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5);
-                const src = ctx.createBufferSource();
-                src.buffer = buf;
+            // Выдох аквалангиста: из трубки вырывается клубок пузырей — густо в начале,
+            // реже к концу, под ним глухое клокотание воздуха.
+            const scuba = () => {
+                const t0 = ctx.currentTime + 0.05;
+                const len = 1.4 + Math.random() * 1.4;
+                const dest = panned();
+                const n = 28 + Math.floor(Math.random() * 30);
+                for (let i = 0; i < n; i++) {
+                    const x = Math.pow(Math.random(), 1.7);          // гуще в начале
+                    const size = 0.25 + Math.random() * 0.75;
+                    bubble(t0 + x * len, size, (0.05 + 0.07 * size) * (1 - 0.6 * x), dest);
+                }
+                const rumble = ctx.createBufferSource();
+                rumble.buffer = makeNoiseBuffer(ctx, 'brown');
                 const bp = ctx.createBiquadFilter();
-                bp.type = 'bandpass'; bp.frequency.setValueAtTime(1500, t);
-                bp.frequency.exponentialRampToValueAtTime(600, t + 0.4);
-                bp.Q.value = 0.7;
+                bp.type = 'bandpass'; bp.frequency.value = 230 + Math.random() * 80; bp.Q.value = 0.9;
+                const rg = ctx.createGain();
+                rg.gain.setValueAtTime(0.0001, t0);
+                rg.gain.exponentialRampToValueAtTime(0.16, t0 + 0.12);
+                rg.gain.setTargetAtTime(0.0001, t0 + len * 0.35, len * 0.25);
+                rumble.connect(bp); bp.connect(rg); rg.connect(dest);
+                rumble.start(t0); rumble.stop(t0 + len + 0.6);
+            };
+            // Побулькивание: несколько крупных пузырей вразнобой
+            const gurgle = () => {
+                const t0 = ctx.currentTime + 0.05;
+                const dest = panned();
+                const n = 2 + Math.floor(Math.random() * 5);
+                let t = t0;
+                for (let i = 0; i < n; i++) {
+                    bubble(t, 0.55 + Math.random() * 0.45, 0.07 + Math.random() * 0.05, dest);
+                    t += 0.08 + Math.random() * 0.35;
+                }
+            };
+            // Плеск над головой, услышанный из-под воды: мягкая глухая волна без щелчка
+            const splash = () => {
+                const t0 = ctx.currentTime + 0.05;
+                const dest = panned();
+                const src = ctx.createBufferSource();
+                src.buffer = makeNoiseBuffer(ctx, 'pink');
+                const lp = ctx.createBiquadFilter();
+                lp.type = 'lowpass'; lp.Q.value = 0.5;
+                lp.frequency.setValueAtTime(260, t0);
+                lp.frequency.linearRampToValueAtTime(520, t0 + 0.25);
+                lp.frequency.exponentialRampToValueAtTime(180, t0 + 1.3);
                 const g = ctx.createGain();
-                g.gain.value = 0.05 + Math.random() * 0.03;
-                src.connect(bp); bp.connect(g); g.connect(out); g.connect(dl);
-                src.start(t);
-                for (let i = 0; i < 2 + Math.floor(Math.random() * 3); i++) setTimeout(gloop, 120 + i * (90 + Math.random() * 120));
+                g.gain.setValueAtTime(0.0001, t0);
+                g.gain.linearRampToValueAtTime(0.09, t0 + 0.18);
+                g.gain.setTargetAtTime(0.0001, t0 + 0.3, 0.3);
+                src.connect(lp); lp.connect(g); g.connect(dest);
+                src.start(t0); src.stop(t0 + 1.8);
+                // следом всплывает пара пузырей
+                for (let i = 0; i < 2 + Math.floor(Math.random() * 3); i++) bubble(t0 + 0.3 + Math.random() * 0.6, 0.4 + Math.random() * 0.5, 0.05, dest);
             };
             let alive = true, timer = null, wTimer = null;
             const sched = () => {
@@ -2862,12 +2922,16 @@
             };
             const waterSched = () => {
                 if (!alive) return;
-                if (Math.random() < 0.55) splash(); else gloop();
-                wTimer = setTimeout(waterSched, 4000 + Math.random() * 9000);
+                const w = acn('whales', 'water');
+                if (w > 0.02) {
+                    const r = Math.random();
+                    if (r < 0.45) scuba(); else if (r < 0.8) gurgle(); else splash();
+                }
+                wTimer = setTimeout(waterSched, (3500 + Math.random() * 7000) / (0.3 + w * 1.4));
             };
             timer = setTimeout(sched, 800);
             wTimer = setTimeout(waterSched, 2500 + Math.random() * 4000);
-            return { stop: () => { alive = false; clearTimeout(timer); clearTimeout(wTimer); } };
+            return { stop: () => { alive = false; clearTimeout(timer); clearTimeout(wTimer); try { deep.src.stop(); } catch (e) {} } };
         }
 
         function genBubblesLoop(ctx, out) {
@@ -5466,7 +5530,7 @@
             }
             try {
             const data = {
-                app: 'kuranty', version: '3.22', exported: new Date().toISOString(),
+                app: 'kuranty', version: '3.23', exported: new Date().toISOString(),
                 settings, sounds: customSounds, chains, presets,
                 pomoStats: localStorage.getItem('kuranty-pomo-stats') || null,
                 quoteTexts
