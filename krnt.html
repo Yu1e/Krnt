@@ -955,7 +955,7 @@
             whales:     { label: 'Киты', icon: 'whale', params: [
                 { key: 'calls', label: 'Частота зовов', def: 50 },
                 { key: 'echo', label: 'Глубина эха', def: 55 },
-                { key: 'water', label: 'Пузыри и плеск', def: 50, hint: 'Побулькивание и плеск над головой. 0 — только киты' }] },
+                { key: 'water', label: 'Плеск', def: 50, hint: 'Тихий плеск над головой. 0 — только киты' }] },
             bubbles:    { label: 'Пузыри', icon: 'bubbles', params: [
                 { key: 'rate', label: 'Частота', def: 50 },
                 { key: 'size', label: 'Размер пузырей', def: 50 }] },
@@ -2826,7 +2826,7 @@
                 v.start(t); v.stop(t + dur + 0.4);
                 o.start(t); o.stop(t + dur + 0.4);
             };
-            // ---- Звуки под водой: всё глухое, низкое, без эха ----
+            // ---- Плеск под водой: глухой, низкий, без эха ----
             // Вода глотает верхние частоты, поэтому всё идёт через мягкий фильтр «толщи воды».
             const water = ctx.createBiquadFilter();
             water.type = 'lowpass'; water.frequency.value = 900; water.Q.value = 0.6;
@@ -2838,33 +2838,7 @@
                 p.connect(water);
                 return p;
             };
-            // Пузырь под водой: низкий затухающий тон, который чуть поднимается, пока пузырь всплывает.
-            // Чем крупнее пузырь, тем ниже и дольше он звучит.
-            const bubble = (t, size, lvl, dest) => {
-                const f = 620 - 470 * size + Math.random() * 60;
-                const dur = 0.05 + 0.14 * size + Math.random() * 0.04;
-                const o = ctx.createOscillator(), g = ctx.createGain();
-                o.type = 'sine';
-                o.frequency.setValueAtTime(f, t);
-                o.frequency.exponentialRampToValueAtTime(f * (1.12 + Math.random() * 0.15), t + dur);
-                g.gain.setValueAtTime(0.0001, t);
-                g.gain.exponentialRampToValueAtTime(Math.max(lvl, 0.0002), t + 0.004);
-                g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-                o.connect(g); g.connect(dest);
-                o.start(t); o.stop(t + dur + 0.02);
-            };
-            // Побулькивание: несколько крупных пузырей вразнобой
-            const gurgle = () => {
-                const t0 = ctx.currentTime + 0.05;
-                const dest = panned();
-                const n = 2 + Math.floor(Math.random() * 5);
-                let t = t0;
-                for (let i = 0; i < n; i++) {
-                    bubble(t, 0.55 + Math.random() * 0.45, 0.07 + Math.random() * 0.05, dest);
-                    t += 0.08 + Math.random() * 0.35;
-                }
-            };
-            // Плеск над головой, услышанный из-под воды: мягкая глухая волна без щелчка
+            // Плеск над головой, услышанный из-под воды: мягкая глухая волна без щелчка, тихо, на заднем плане
             const splash = () => {
                 const t0 = ctx.currentTime + 0.05;
                 const dest = panned();
@@ -2877,12 +2851,10 @@
                 lp.frequency.exponentialRampToValueAtTime(180, t0 + 1.3);
                 const g = ctx.createGain();
                 g.gain.setValueAtTime(0.0001, t0);
-                g.gain.linearRampToValueAtTime(0.09, t0 + 0.18);
+                g.gain.linearRampToValueAtTime(0.025, t0 + 0.18);
                 g.gain.setTargetAtTime(0.0001, t0 + 0.3, 0.3);
                 src.connect(lp); lp.connect(g); g.connect(dest);
                 src.start(t0); src.stop(t0 + 1.8);
-                // следом всплывает пара пузырей
-                for (let i = 0; i < 2 + Math.floor(Math.random() * 3); i++) bubble(t0 + 0.3 + Math.random() * 0.6, 0.4 + Math.random() * 0.5, 0.05, dest);
             };
             let alive = true, timer = null, wTimer = null;
             const sched = () => {
@@ -2895,10 +2867,7 @@
             const waterSched = () => {
                 if (!alive) return;
                 const w = acn('whales', 'water');
-                if (w > 0.02) {
-                    const r = Math.random();
-                    if (r < 0.65) gurgle(); else splash();
-                }
+                if (w > 0.02) splash();
                 wTimer = setTimeout(waterSched, (3500 + Math.random() * 7000) / (0.3 + w * 1.4));
             };
             timer = setTimeout(sched, 800);
