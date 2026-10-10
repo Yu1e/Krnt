@@ -2831,11 +2831,6 @@
             const water = ctx.createBiquadFilter();
             water.type = 'lowpass'; water.frequency.value = 900; water.Q.value = 0.6;
             water.connect(out);
-            // ровный гул глубины, едва слышный
-            const deepLp = ctx.createBiquadFilter();
-            deepLp.type = 'lowpass'; deepLp.frequency.value = 170;
-            deepLp.connect(out);
-            const deep = loopNoise(ctx, 'brown', 0.05, deepLp);
             const panned = () => {
                 if (!ctx.createStereoPanner) return water;
                 const p = ctx.createStereoPanner();
@@ -2931,7 +2926,7 @@
             };
             timer = setTimeout(sched, 800);
             wTimer = setTimeout(waterSched, 2500 + Math.random() * 4000);
-            return { stop: () => { alive = false; clearTimeout(timer); clearTimeout(wTimer); try { deep.src.stop(); } catch (e) {} } };
+            return { stop: () => { alive = false; clearTimeout(timer); clearTimeout(wTimer); } };
         }
 
         function genBubblesLoop(ctx, out) {
